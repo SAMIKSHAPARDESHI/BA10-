@@ -1,0 +1,12 @@
+opencv-python
+mediapipe
+numpy
+scipy
+pytesseract
+pyttsx3
+flask
+tensorflow
+imutils
+scikit-image
+moviepy
+fastdtw
