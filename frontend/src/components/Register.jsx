@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { useNavigate } from "react-router";cd 
+import { useNavigate } from "react-router";
 import { Shield, Mail, Lock, Eye, EyeOff, Smartphone, ArrowRight, CheckCircle2, AlertCircle, KeyRound, FileText, Home, UserPlus } from "lucide-react";
 
 export function LoginConsent() {
