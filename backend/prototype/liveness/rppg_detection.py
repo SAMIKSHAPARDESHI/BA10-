@@ -18,7 +18,7 @@ def detect_rppg_liveness(duration=10):
     face_cascade = cv2.CascadeClassifier(
         cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
-    print("\n❤️ Starting rPPG Liveness Detection")
+    print("\n Starting rPPG Liveness Detection")
     print("➡ Stay still and face the camera")
 
     signal = []
@@ -71,24 +71,33 @@ def detect_rppg_liveness(duration=10):
     cv2.destroyAllWindows()
 
     if len(signal) < 20:
-        print("❌ rPPG failed (not enough data)")
+        print("rPPG failed (not enough data)")
         return False
 
     signal = np.array(signal)
     signal = (signal - np.mean(signal)) / np.std(signal)
 
-    filtered = bandpass_filter(signal, 0.7, 4.0, fps)
+    filtered = bandpass_filter(signal, 0.8, 2.5, fps)
     yf = np.abs(rfft(filtered))
     xf = rfftfreq(len(filtered), 1 / fps)
 
-    bpm = xf[np.argmax(yf)] * 60
-    print(f"❤️ BPM Detected: {bpm:.2f}")
+    #  ADD THIS BLOCK HERE
+    peak_power = np.max(yf)
+    avg_power = np.mean(yf)
 
-    if 30 < bpm < 100:
-        print("✅ rPPG verification successful")
+    if peak_power < 2 * avg_power:
+        print(" Weak pulse signal (possible spoof)")
+        return False
+
+    # THEN BPM calculation
+    bpm = xf[np.argmax(yf)] * 60
+    print(f" BPM Detected: {bpm:.2f}")
+
+    if 60 < bpm < 100:
+        print(" rPPG verification successful")
         return True
     else:
-        print("❌ rPPG verification failed")
+        print(" rPPG verification failed")
         return False
 
 

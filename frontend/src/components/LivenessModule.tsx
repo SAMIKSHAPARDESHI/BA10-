@@ -3,8 +3,49 @@ import { motion, AnimatePresence } from "motion/react";
 import { useNavigate } from "react-router";
 import { Shield, Eye, Sparkles, Activity, Check, ArrowRight, ArrowLeft, Hand } from "lucide-react";
 import { VerificationLayout } from "./VerificationLayout";
+import axios from "axios";
+import { useRef } from "react";
 import { BackButton } from "./BackButton";
+const recordAndSendVideo = async (
+  videoRef: any,
+  apiUrl: string,
+  onSuccess: () => void,
+  setIsProcessing: (val: boolean) => void
+) => {
+  const stream = await navigator.mediaDevices.getUserMedia({ video: true });
 
+  videoRef.current.srcObject = stream;
+
+  const mediaRecorder = new MediaRecorder(stream);
+  let chunks: any[] = [];
+
+  mediaRecorder.ondataavailable = (e) => {
+    chunks.push(e.data);
+  };
+
+  mediaRecorder.onstop = async () => {
+    const blob = new Blob(chunks, { type: "video/webm" });
+
+    const formData = new FormData();
+    formData.append("video", blob);
+
+    try {
+      const res = await axios.post(apiUrl, formData);
+      console.log(res.data);
+      onSuccess();
+    } catch (err) {
+      console.error(err);
+    }
+
+    setIsProcessing(false);
+  };
+
+  mediaRecorder.start();
+
+  setTimeout(() => {
+    mediaRecorder.stop();
+  }, 5000);
+};
 type SubStep = "blink" | "head-turn" | "heartbeat" | "air-gesture";
 
 export function LivenessModule() {
@@ -20,7 +61,7 @@ export function LivenessModule() {
     { id: "heartbeat" as SubStep, label: "Heartbeat Detection", number: 3 },
     { id: "air-gesture" as SubStep, label: "Air Gesture Check", number: 4 },
   ];
-
+  
   const currentStepIndex = subSteps.findIndex((s) => s.id === currentSubStep);
 
   const handleComplete = (step: SubStep) => {
@@ -37,7 +78,7 @@ export function LivenessModule() {
       }, 800);
     }
   };
-
+  
   return (
     <VerificationLayout>
       <BackButton />
@@ -172,8 +213,9 @@ export function LivenessModule() {
                       key="blink"
                       onComplete={() => handleComplete("blink")}
                       isProcessing={isProcessing}
-                      setIsProcessing={setIsProcessing}
+                      setIsProcessing={setIsProcessing}                      
                     />
+
                   )}
 
                   {currentSubStep === "head-turn" && (
@@ -238,6 +280,7 @@ function BlinkDetectionStep({
   const [blinkCount, setBlinkCount] = useState(0);
   const [currentAction, setCurrentAction] = useState("Position yourself in the camera frame");
   const [progress, setProgress] = useState(0);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const actions = [
     "Position yourself in the camera frame",
@@ -249,43 +292,19 @@ function BlinkDetectionStep({
     "Blink verification complete!"
   ];
 
-  const startDetection = () => {
-    setIsProcessing(true);
-    setProgress(0);
-    let actionIndex = 0;
-    let currentProgress = 0;
-    
-    const progressInterval = setInterval(() => {
-      currentProgress += 3;
-      setProgress(currentProgress);
-      
-      if (currentProgress >= 20 && actionIndex === 0) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 35 && actionIndex === 1) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 55 && actionIndex === 2) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-        setBlinkCount(1);
-      } else if (currentProgress >= 70 && actionIndex === 3) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 85 && actionIndex === 4) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 100) {
-        clearInterval(progressInterval);
-        actionIndex = 6;
-        setCurrentAction(actions[actionIndex]);
-        setTimeout(() => {
-          setIsProcessing(false);
-          onComplete();
-        }, 1000);
-      }
-    }, 60);
-  };
+  const startDetection = async () => {
+  setIsProcessing(true);
+
+  await recordAndSendVideo(
+    videoRef,
+    "http://localhost:5000/api/blink",
+    () => {
+      setBlinkCount(1);
+      onComplete();
+    },
+    setIsProcessing
+  );
+};
 
   return (
     <motion.div
@@ -309,6 +328,7 @@ function BlinkDetectionStep({
 
       {/* Camera Preview */}
       <div className="aspect-video max-w-2xl mx-auto bg-gradient-to-br from-gray-100 to-gray-50 rounded-2xl relative overflow-hidden border-2 border-gray-200 shadow-xl">
+        <video ref={videoRef} autoPlay muted className="absolute inset-0 w-full h-full object-cover rounded-2xl"/>
         {/* Face oval guide */}
         <div className="absolute inset-0 flex items-center justify-center">
           <motion.div
@@ -716,6 +736,19 @@ function HeartbeatStep({
   const [currentAction, setCurrentAction] = useState("Position your face in the frame");
   const [bpm, setBpm] = useState(0);
 
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  const startDetection = async () => {
+    setIsProcessing(true);
+
+  await recordAndSendVideo(
+    videoRef,
+    "http://localhost:5000/api/rppg",
+    () => onComplete(),
+    setIsProcessing
+  );
+};
+
   const actions = [
     "Position your face in the frame",
     "Initializing rPPG sensor...",
@@ -725,47 +758,6 @@ function HeartbeatStep({
     "Verifying pulse authenticity...",
     "Heartbeat confirmed - You're alive!"
   ];
-
-  const startDetection = () => {
-    setIsProcessing(true);
-    let currentProgress = 0;
-    let actionIndex = 0;
-    let currentBpm = 60;
-
-    const interval = setInterval(() => {
-      currentProgress += 2.5;
-      setProgress(currentProgress);
-
-      // Update BPM gradually
-      currentBpm = 60 + Math.sin(currentProgress / 10) * 10;
-      setBpm(Math.round(currentBpm));
-
-      if (currentProgress >= 15 && actionIndex === 0) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 30 && actionIndex === 1) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 50 && actionIndex === 2) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 70 && actionIndex === 3) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 90 && actionIndex === 4) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 100) {
-        clearInterval(interval);
-        setDetected(true);
-        actionIndex = 6;
-        setCurrentAction(actions[actionIndex]);
-        setBpm(72);
-        setIsProcessing(false);
-        setTimeout(() => onComplete(), 1000);
-      }
-    }, 60);
-  };
 
   return (
     <motion.div
