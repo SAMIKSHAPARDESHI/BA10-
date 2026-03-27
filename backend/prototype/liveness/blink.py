@@ -1,24 +1,24 @@
 import cv2
 import mediapipe as mp
 import os
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
-
-def blink_detection(required_blinks=3):
+def blink_detection(video_path, required_blinks=3):
     mp_face_mesh = mp.solutions.face_mesh
     mp_face_detection = mp.solutions.face_detection
 
     face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True)
     face_detector = mp_face_detection.FaceDetection(min_detection_confidence=0.5)
 
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(video_path)
+
+    if not cap.isOpened():
+        return False, 0
 
     blink_counter = 0
     blink_state = False
-
-    print("\n Blink Detection Started")
-    print(f"➡ Please blink {required_blinks} times")
 
     while True:
         ret, frame = cap.read()
@@ -26,65 +26,52 @@ def blink_detection(required_blinks=3):
             break
 
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
         results_mesh = face_mesh.process(frame_rgb)
         results_detection = face_detector.process(frame_rgb)
 
-        # Check number of faces
-        num_faces = 0
-        if results_detection.detections:
-            num_faces = len(results_detection.detections)
+        # ✅ Face count check
+        num_faces = len(results_detection.detections) if results_detection.detections else 0
 
-        if num_faces == 0:
-            cv2.putText(frame, "No face detected!", (30, 100),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            cv2.imshow("Blink Detection", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-            continue
-
-        if num_faces > 1:
-            cv2.putText(frame, " Multiple faces detected! Only one person allowed.",
-                        (30, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            cv2.imshow("Blink Detection", frame)
-            print(" Multiple faces detected! Blink verification aborted.")
+        if num_faces != 1:
             cap.release()
-            cv2.destroyAllWindows()
-            return False  # Stop verification if more than one face
+            return False, blink_counter
 
-        # Blink detection
+        # ✅ Blink detection logic
         if results_mesh.multi_face_landmarks:
             face_landmarks = results_mesh.multi_face_landmarks[0]
+
             left_eye_top = face_landmarks.landmark[159]
             left_eye_bottom = face_landmarks.landmark[145]
+
             eye_open = abs(left_eye_top.y - left_eye_bottom.y)
 
+            # 🔥 Blink condition
             if eye_open < 0.015 and not blink_state:
                 blink_state = True
                 blink_counter += 1
+
             elif eye_open >= 0.015:
                 blink_state = False
 
-        cv2.putText(frame, f"Blinks: {blink_counter}/{required_blinks}",
-                    (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
-        cv2.imshow("Blink Detection", frame)
-
+        # ✅ Stop early if enough blinks
         if blink_counter >= required_blinks:
-            print("Blink verification successful")
-            break
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
     cap.release()
-    cv2.destroyAllWindows()
-    return blink_counter >= required_blinks
+
+    # ✅ Final result
+    is_real = blink_counter >= required_blinks
+    return is_real, blink_counter
 
 
+# 🔥 OPTIONAL: For local testing only (NOT used in API)
 if __name__ == "__main__":
-    if blink_detection(required_blinks=3):
-        print("Blink verification successful")
-        print("BLINK_SUCCESS")
+    video_path = "test.webm"  # put test video here
+
+    result, blinks = blink_detection(video_path, required_blinks=3)
+
+    if result:
+        print(f"✅ Blink verification successful ({blinks} blinks)")
     else:
-        print("\n Blink verification failed")
-        print("BLINK_FAILED")
+        print(f"❌ Blink verification failed ({blinks} blinks)")

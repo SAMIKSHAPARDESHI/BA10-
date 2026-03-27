@@ -6,46 +6,40 @@ import { VerificationLayout } from "./VerificationLayout";
 import axios from "axios";
 import { useRef } from "react";
 import { BackButton } from "./BackButton";
+import { Hands } from "@mediapipe/hands";
+import { Camera } from "@mediapipe/camera_utils";
+import { drawConnectors, drawLandmarks } from "@mediapipe/drawing_utils";
+import { HAND_CONNECTIONS } from "@mediapipe/hands";
+import { FaceMesh } from "@mediapipe/face_mesh";
+
 const recordAndSendVideo = async (
   videoRef: any,
   apiUrl: string,
-  onSuccess: () => void,
-  setIsProcessing: (val: boolean) => void
+  setRecorder: (rec: MediaRecorder) => void,
+  setChunks: (chunks: any[]) => void
 ) => {
   const stream = await navigator.mediaDevices.getUserMedia({ video: true });
 
-  videoRef.current.srcObject = stream;
+ if (!videoRef.current) {
+  console.error("❌ videoRef is null");
+  return;
+}
+
+videoRef.current.srcObject = stream;
 
   const mediaRecorder = new MediaRecorder(stream);
   let chunks: any[] = [];
 
   mediaRecorder.ondataavailable = (e) => {
-    chunks.push(e.data);
+    if (e.data.size > 0) chunks.push(e.data);
   };
 
-  mediaRecorder.onstop = async () => {
-    const blob = new Blob(chunks, { type: "video/webm" });
-
-    const formData = new FormData();
-    formData.append("video", blob);
-
-    try {
-      const res = await axios.post(apiUrl, formData);
-      console.log(res.data);
-      onSuccess();
-    } catch (err) {
-      console.error(err);
-    }
-
-    setIsProcessing(false);
-  };
+  setRecorder(mediaRecorder);
+  setChunks(chunks);
 
   mediaRecorder.start();
-
-  setTimeout(() => {
-    mediaRecorder.stop();
-  }, 5000);
 };
+
 type SubStep = "blink" | "head-turn" | "heartbeat" | "air-gesture";
 
 export function LivenessModule() {
@@ -240,8 +234,6 @@ export function LivenessModule() {
                     <AirGestureStep
                       key="air-gesture"
                       onComplete={() => handleComplete("air-gesture")}
-                      isProcessing={isProcessing}
-                      setIsProcessing={setIsProcessing}
                     />
                   )}
                 </AnimatePresence>
@@ -281,6 +273,9 @@ function BlinkDetectionStep({
   const [currentAction, setCurrentAction] = useState("Position yourself in the camera frame");
   const [progress, setProgress] = useState(0);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [isDetecting, setIsDetecting] = useState(false);
+  const [recorder, setRecorder] = useState<MediaRecorder | null>(null);
+  const [chunks, setChunks] = useState<any[]>([]);
 
   const actions = [
     "Position yourself in the camera frame",
@@ -294,16 +289,49 @@ function BlinkDetectionStep({
 
   const startDetection = async () => {
   setIsProcessing(true);
+  setIsDetecting(true);
 
   await recordAndSendVideo(
     videoRef,
-    "http://localhost:5000/api/blink",
-    () => {
-      setBlinkCount(1);
-      onComplete();
-    },
-    setIsProcessing
+    "http://localhost:5001/api/blink",
+    setRecorder,
+    setChunks
   );
+};
+
+const stopDetection = async () => {
+  if (!recorder) return;
+
+  recorder.stop();
+  setIsDetecting(false);
+
+  recorder.onstop = async () => {
+    const blob = new Blob(chunks, { type: "video/webm" });
+
+    const formData = new FormData();
+    formData.append("video", blob);
+
+    try {
+      const res = await axios.post("http://localhost:5001/api/blink", formData);
+
+      if (res.data.blinks >= 3) {
+        setBlinkCount(res.data.blinks);
+        onComplete();
+      } else {
+        alert("❌ Blink at least 3 times");
+      }
+    } catch (err) {
+      console.error(err);
+    }
+
+    setIsProcessing(false);
+  };
+
+  // stop camera
+  if (videoRef.current?.srcObject) {
+    const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+    tracks.forEach((track) => track.stop());
+  }
 };
 
   return (
@@ -420,7 +448,7 @@ function BlinkDetectionStep({
       )}
 
       {/* Instructions */}
-      {!isProcessing && (
+      
         <div className="max-w-xl mx-auto">
           <div className="glass rounded-2xl p-6 space-y-4">
             <h3 className="text-lg text-[#0f172a] font-semibold mb-4">Instructions:</h3>
@@ -441,20 +469,22 @@ function BlinkDetectionStep({
                 <div className="w-6 h-6 rounded-full bg-emerald-100 flex items-center justify-center flex-shrink-0 mt-0.5">
                   <span className="text-xs text-emerald-600 font-semibold">3</span>
                 </div>
-                <p className="text-sm text-[#0f172a]/70">Blink naturally when prompted - don't force it</p>
+                <p className="text-sm text-[#0f172a]/70">Blink naturally for atleast 3 times </p>
               </div>
             </div>
           </div>
 
           <button
-            onClick={startDetection}
+            onClick={isDetecting ? stopDetection : startDetection}
             className="w-full mt-6 px-8 py-4 bg-gradient-to-r from-emerald-600 to-emerald-500 text-white rounded-2xl premium-shadow-lg hover:shadow-2xl hover:scale-105 transition-all duration-300 flex items-center justify-center gap-2"
           >
             <Eye className="w-5 h-5" />
-            <span className="text-lg">Start Blink Detection</span>
+            <span className="text-lg">
+            {isDetecting ? "Stop Detection" : "Start Blink Detection"}
+            </span>
           </button>
         </div>
-      )}
+
     </motion.div>
   );
 }
@@ -470,68 +500,128 @@ function HeadTurnStep({
   setIsProcessing: (value: boolean) => void;
 }) {
   const [direction, setDirection] = useState<"left" | "right" | "complete">("left");
-  const [currentAction, setCurrentAction] = useState("Position your face in the frame");
-  const [progress, setProgress] = useState(0);
+  const [currentAction, setCurrentAction] = useState("Click start to begin");
 
-  const actions = [
-    "Position your face in the frame",
-    "Calibrating head position...",
-    "Please turn your head slowly to the LEFT",
-    "Analyzing left profile...",
-    "Capturing left side landmarks...",
-    "Now turn your head slowly to the RIGHT",
-    "Analyzing right profile...",
-    "Capturing right side landmarks...",
-    "Verifying 3D facial structure...",
-    "Head movement verification complete!"
-  ];
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  const startDetection = () => {
-    setIsProcessing(true);
-    setProgress(0);
-    let actionIndex = 0;
-    let currentProgress = 0;
+  const startDetection = async () => {
+    try {
+      setIsProcessing(true);
+      setDirection("left");
+      setCurrentAction("Initializing camera...");
 
-    const progressInterval = setInterval(() => {
-      currentProgress += 2.5;
-      setProgress(currentProgress);
+      // 🎥 Start camera
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
 
-      if (currentProgress >= 10 && actionIndex === 0) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 20 && actionIndex === 1) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 30 && actionIndex === 2) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 40 && actionIndex === 3) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-        setDirection("right");
-      } else if (currentProgress >= 50 && actionIndex === 4) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 60 && actionIndex === 5) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 75 && actionIndex === 6) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 90 && actionIndex === 7) {
-        actionIndex++;
-        setCurrentAction(actions[actionIndex]);
-      } else if (currentProgress >= 100) {
-        clearInterval(progressInterval);
-        setDirection("complete");
-        actionIndex = 9;
-        setCurrentAction(actions[actionIndex]);
-        setTimeout(() => {
-          setIsProcessing(false);
-          onComplete();
-        }, 1000);
+      if (!videoRef.current) {
+        console.error("❌ videoRef not found");
+        return;
       }
-    }, 80);
+
+      videoRef.current.srcObject = stream;
+
+      // ✅ WAIT for video to load
+      await new Promise((resolve) => {
+        if (!videoRef.current) return;
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current?.play();
+          resolve(true);
+        };
+      });
+
+      // 🧠 Initialize FaceMesh
+      const faceMesh = new FaceMesh({
+        locateFile: (file) =>
+          `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
+      });
+
+      faceMesh.setOptions({
+        maxNumFaces: 1,
+        refineLandmarks: true,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+
+      let counter = 0;
+      const REQUIRED_FRAMES = 8;
+
+      let currentDirection: "left" | "right" = "left";
+
+      setCurrentAction("Turn your head LEFT 👈");
+
+      // 🔍 Detection logic
+      faceMesh.onResults((results) => {
+        if (
+          !results.multiFaceLandmarks ||
+          results.multiFaceLandmarks.length === 0
+        ) {
+          counter = 0;
+          return;
+        }
+
+        const landmarks = results.multiFaceLandmarks[0];
+
+        const nose = landmarks[1];
+        const leftCheek = landmarks[234];
+        const rightCheek = landmarks[454];
+
+        const faceCenter = (leftCheek.x + rightCheek.x) / 2;
+        const offset = nose.x - faceCenter;
+
+        // 👈 LEFT detection
+        if (currentDirection === "left" && offset < -0.03) {
+          counter++;
+          setCurrentAction("Good! Hold LEFT...");
+
+          if (counter > REQUIRED_FRAMES) {
+            currentDirection = "right";
+            setDirection("right");
+            counter = 0;
+            setCurrentAction("Now turn RIGHT 👉");
+          }
+        }
+
+        // 👉 RIGHT detection
+        else if (currentDirection === "right" && offset > 0.03) {
+          counter++;
+          setCurrentAction("Good! Hold RIGHT...");
+
+          if (counter > REQUIRED_FRAMES) {
+            setDirection("complete");
+            setCurrentAction("✅ Head movement verified!");
+            setIsProcessing(false);
+
+            // 🛑 Stop camera
+            if (videoRef.current?.srcObject) {
+              const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+              tracks.forEach((track) => track.stop());
+            }
+
+            onComplete();
+          }
+        } else {
+          counter = 0;
+        }
+      });
+
+      // 🔄 Detection loop
+      const detect = async () => {
+        if (
+          videoRef.current &&
+          videoRef.current.readyState === 4 &&
+          videoRef.current.videoWidth > 0
+        ) {
+          await faceMesh.send({ image: videoRef.current });
+        }
+        requestAnimationFrame(detect);
+      };
+
+      detect();
+    } catch (err) {
+      console.error("❌ Camera error:", err);
+      setIsProcessing(false);
+      alert("Camera access denied or not available");
+    }
   };
 
   return (
@@ -541,181 +631,90 @@ function HeadTurnStep({
       exit={{ opacity: 0, x: -20 }}
       className="space-y-8"
     >
-      {/* Step Header */}
+      {/* Header */}
       <div className="text-center">
         <div className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 border border-blue-200 rounded-full mb-4">
           <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-          <span className="text-sm text-blue-700 font-medium">Step 2 of 4 • Head Movement</span>
+          <span className="text-sm text-blue-700 font-medium">
+            Step 2 of 4 • Head Movement
+          </span>
         </div>
         <h2 className="text-3xl text-[#0f172a] mb-2">Turn Your Head</h2>
         <p className="text-lg text-[#0f172a]/60 font-light">
-          Slowly turn your head left, then right to verify 3D face structure
+          Follow instructions to verify 3D face structure
         </p>
       </div>
 
       {/* Camera Preview */}
       <div className="aspect-video max-w-2xl mx-auto bg-gradient-to-br from-gray-100 to-gray-50 rounded-2xl relative overflow-hidden border-2 border-gray-200 shadow-xl">
+        
+        {/* 🎥 CAMERA (VISIBLE NOW) */}
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          className="absolute inset-0 w-full h-full object-cover"
+        />
+
+        {/* Oval */}
         <div className="absolute inset-0 flex items-center justify-center">
           <motion.div
             animate={{
               scale: isProcessing ? [1, 1.02, 1] : 1,
-              borderColor: direction === "complete" ? "#10b981" : isProcessing ? "#3b82f6" : "#d1d5db",
+              borderColor:
+                direction === "complete"
+                  ? "#10b981"
+                  : isProcessing
+                  ? "#3b82f6"
+                  : "#d1d5db",
             }}
             transition={{ duration: 2, repeat: isProcessing ? Infinity : 0 }}
             className="w-64 h-80 border-4 rounded-[50%] border-dashed"
           />
         </div>
 
-        {/* Direction indicators */}
+        {/* Direction */}
         {isProcessing && direction !== "complete" && (
           <>
-            <motion.div
-              animate={{
-                opacity: direction === "left" ? [0.3, 1, 0.3] : 0,
-                x: direction === "left" ? [-5, 0, -5] : 0,
-              }}
-              transition={{
-                duration: 1,
-                repeat: Infinity,
-              }}
-              className="absolute left-8 top-1/2 -translate-y-1/2"
-            >
-              <div className="flex flex-col items-center gap-2">
-                <ArrowLeft className="w-16 h-16 text-blue-500" />
-                <span className="text-sm font-medium text-blue-600 bg-white/90 px-3 py-1 rounded-full">Turn LEFT</span>
+            {direction === "left" && (
+              <div className="absolute left-8 top-1/2 -translate-y-1/2 text-blue-600 text-lg">
+                ← LEFT
               </div>
-            </motion.div>
-            <motion.div
-              animate={{
-                opacity: direction === "right" ? [0.3, 1, 0.3] : 0,
-                x: direction === "right" ? [5, 0, 5] : 0,
-              }}
-              transition={{
-                duration: 1,
-                repeat: Infinity,
-              }}
-              className="absolute right-8 top-1/2 -translate-y-1/2"
-            >
-              <div className="flex flex-col items-center gap-2">
-                <ArrowRight className="w-16 h-16 text-blue-500" />
-                <span className="text-sm font-medium text-blue-600 bg-white/90 px-3 py-1 rounded-full">Turn RIGHT</span>
+            )}
+            {direction === "right" && (
+              <div className="absolute right-8 top-1/2 -translate-y-1/2 text-blue-600 text-lg">
+                RIGHT →
               </div>
-            </motion.div>
+            )}
           </>
         )}
 
-        {/* Success indicator */}
+        {/* Success */}
         {direction === "complete" && (
-          <motion.div
-            initial={{ scale: 0, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="absolute inset-0 flex items-center justify-center bg-emerald-500/10"
-          >
-            <div className="flex flex-col items-center gap-3">
-              <div className="w-24 h-24 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shadow-2xl">
-                <Check className="w-12 h-12 text-white" />
-              </div>
-              <span className="text-lg font-semibold text-emerald-600 bg-white px-4 py-2 rounded-full shadow-lg">
-                Movement Verified!
-              </span>
+          <div className="absolute inset-0 flex items-center justify-center bg-emerald-500/20">
+            <div className="text-emerald-600 text-xl font-bold">
+              ✅ Verified
             </div>
-          </motion.div>
-        )}
-
-        {/* Corner markers for tracking */}
-        {isProcessing && (
-          <>
-            <motion.div
-              animate={{ opacity: [0.5, 1, 0.5] }}
-              transition={{ duration: 1.5, repeat: Infinity }}
-              className="absolute top-8 left-8 w-16 h-16 border-l-4 border-t-4 border-blue-500 rounded-tl-2xl"
-            />
-            <motion.div
-              animate={{ opacity: [0.5, 1, 0.5] }}
-              transition={{ duration: 1.5, delay: 0.2, repeat: Infinity }}
-              className="absolute top-8 right-8 w-16 h-16 border-r-4 border-t-4 border-blue-500 rounded-tr-2xl"
-            />
-            <motion.div
-              animate={{ opacity: [0.5, 1, 0.5] }}
-              transition={{ duration: 1.5, delay: 0.4, repeat: Infinity }}
-              className="absolute bottom-8 left-8 w-16 h-16 border-l-4 border-b-4 border-blue-500 rounded-bl-2xl"
-            />
-            <motion.div
-              animate={{ opacity: [0.5, 1, 0.5] }}
-              transition={{ duration: 1.5, delay: 0.6, repeat: Infinity }}
-              className="absolute bottom-8 right-8 w-16 h-16 border-r-4 border-b-4 border-blue-500 rounded-br-2xl"
-            />
-          </>
+          </div>
         )}
       </div>
 
-      {/* Current Action & Progress */}
+      {/* Status */}
       {isProcessing && (
-        <div className="space-y-4">
-          <div className="text-center">
-            <motion.p
-              key={currentAction}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="text-lg text-blue-600 font-medium"
-            >
-              {currentAction}
-            </motion.p>
-          </div>
-
-          {/* Progress Bar */}
-          <div className="max-w-xl mx-auto space-y-2">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-[#0f172a]/70">Movement Analysis</span>
-              <span className="text-blue-600 font-semibold">{Math.round(progress)}%</span>
-            </div>
-            <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden">
-              <motion.div
-                initial={{ width: "0%" }}
-                animate={{ width: `${progress}%` }}
-                className="h-full bg-gradient-to-r from-blue-500 via-blue-600 to-blue-500 rounded-full"
-              />
-            </div>
-          </div>
+        <div className="text-center text-blue-600 font-medium">
+          {currentAction}
         </div>
       )}
 
-      {/* Instructions */}
+      {/* Button */}
       {!isProcessing && (
-        <div className="max-w-xl mx-auto">
-          <div className="glass rounded-2xl p-6 space-y-4">
-            <h3 className="text-lg text-[#0f172a] font-semibold mb-4">Instructions:</h3>
-            <div className="space-y-3">
-              <div className="flex items-start gap-3">
-                <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <span className="text-xs text-blue-600 font-semibold">1</span>
-                </div>
-                <p className="text-sm text-[#0f172a]/70">Keep your face centered in the oval guide</p>
-              </div>
-              <div className="flex items-start gap-3">
-                <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <span className="text-xs text-blue-600 font-semibold">2</span>
-                </div>
-                <p className="text-sm text-[#0f172a]/70">Turn your head slowly and smoothly when prompted</p>
-              </div>
-              <div className="flex items-start gap-3">
-                <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <span className="text-xs text-blue-600 font-semibold">3</span>
-                </div>
-                <p className="text-sm text-[#0f172a]/70">Follow the arrows - first left, then right</p>
-              </div>
-            </div>
-          </div>
-
-          <button
-            onClick={startDetection}
-            className="w-full mt-6 px-8 py-4 bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-2xl premium-shadow-lg hover:shadow-2xl hover:scale-105 transition-all duration-300 flex items-center justify-center gap-2"
-          >
-            <ArrowLeft className="w-5 h-5" />
-            <span className="text-lg">Start Head Movement</span>
-            <ArrowRight className="w-5 h-5" />
-          </button>
-        </div>
+        <button
+          onClick={startDetection}
+          className="w-full mt-6 px-8 py-4 bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-2xl"
+        >
+          Start Head Movement
+        </button>
       )}
     </motion.div>
   );
@@ -734,19 +733,81 @@ function HeartbeatStep({
   const [progress, setProgress] = useState(0);
   const [detected, setDetected] = useState(false);
   const [currentAction, setCurrentAction] = useState("Position your face in the frame");
+  const [countdown, setCountdown] = useState(10);
   const [bpm, setBpm] = useState(0);
+  const [isDetecting, setIsDetecting] = useState(false);
+  const [recorder, setRecorder] = useState<MediaRecorder | null>(null);
+  const [chunks, setChunks] = useState<any[]>([]);
+  
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const startDetection = async () => {
-    setIsProcessing(true);
+  setIsProcessing(true);
+  setIsDetecting(true);
+  setCountdown(10);
 
-  await recordAndSendVideo(
-    videoRef,
-    "http://localhost:5000/api/rppg",
-    () => onComplete(),
-    setIsProcessing
-  );
+  // start recording
+  setTimeout(async () => {
+    await recordAndSendVideo(
+      videoRef,
+      "http://localhost:5001/api/rppg",
+      setRecorder,
+      setChunks
+    );
+  }, 200);
+
+  // ONLY TIMER (no auto stop)
+  let time = 10;
+
+  const interval = setInterval(() => {
+    time--;
+    setCountdown(time);
+
+    if (time <= 0) {
+      clearInterval(interval); // ❌ DO NOT stop detection
+    }
+  }, 1000);
+};
+
+  const stopDetection = async () => {
+  if (!recorder) return;
+
+  recorder.stop();
+  setIsDetecting(false);
+
+  recorder.onstop = async () => {
+    const blob = new Blob(chunks, { type: "video/webm" });
+
+    const formData = new FormData();
+    formData.append("video", blob);
+
+    try {
+      const res = await axios.post("http://localhost:5001/api/rppg", formData);
+
+      console.log(res.data);
+
+      // ✅ EXPECTING: { bpm: 75, status: "REAL" }
+        setBpm(res.data.bpm);   // show BPM
+        onComplete()
+     // if (res.data.status === "REAL" || "FAKE") {
+      //  setBpm(res.data.bpm);   // show BPM
+       // onComplete();           // go next step
+      //} else {
+       // alert("❌ Invalid heartbeat detected");
+      //}
+    } catch (err) {
+      console.error(err);
+    }
+
+    setIsProcessing(false);
+  };
+
+  // stop camera
+  if (videoRef.current?.srcObject) {
+    const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+    tracks.forEach((track) => track.stop());
+  }
 };
 
   const actions = [
@@ -780,6 +841,7 @@ function HeartbeatStep({
 
       {/* Camera Preview */}
       <div className="aspect-video max-w-2xl mx-auto bg-gradient-to-br from-gray-100 to-gray-50 rounded-2xl relative overflow-hidden border-2 border-gray-200 shadow-xl">
+        <video  ref={videoRef} autoPlay muted className="absolute inset-0 w-full h-full object-cover rounded-2xl"/>
         <div className="absolute inset-0 flex items-center justify-center">
           <motion.div
             animate={{
@@ -907,7 +969,9 @@ function HeartbeatStep({
           <div className="max-w-xl mx-auto space-y-2">
             <div className="flex items-center justify-between text-sm">
               <span className="text-[#0f172a]/70">Heartbeat Analysis (rPPG)</span>
-              <span className="text-purple-600 font-semibold">{Math.round(progress)}%</span>
+              <span className="text-purple-600 font-semibold">
+              ⏱ {countdown}s
+              </span>
             </div>
             <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden">
               <motion.div
@@ -921,7 +985,6 @@ function HeartbeatStep({
       )}
 
       {/* Instructions */}
-      {!isProcessing && (
         <div className="max-w-xl mx-auto">
           <div className="glass rounded-2xl p-6 space-y-4">
             <h3 className="text-lg text-[#0f172a] font-semibold mb-4">Instructions:</h3>
@@ -948,136 +1011,218 @@ function HeartbeatStep({
           </div>
 
           <button
-            onClick={startDetection}
+            onClick={isDetecting ? stopDetection : startDetection}
             className="w-full mt-6 px-8 py-4 bg-gradient-to-r from-purple-600 to-purple-500 text-white rounded-2xl premium-shadow-lg hover:shadow-2xl hover:scale-105 transition-all duration-300 flex items-center justify-center gap-2"
           >
             <Activity className="w-5 h-5" />
-            <span className="text-lg">Start Heartbeat Detection</span>
+            <span className="text-lg">
+              {isDetecting ? "⏹ Stop Heartbeat Detection" : "💓 Start Heartbeat Detection"}
+            </span>
           </button>
         </div>
-      )}
+
     </motion.div>
   );
 }
 
 // Sub-step 4: Air Gesture Check
-function AirGestureStep({
-  onComplete,
-  isProcessing,
-  setIsProcessing,
-}: {
-  onComplete: () => void;
-  isProcessing: boolean;
-  setIsProcessing: (value: boolean) => void;
-}) {
-  const [gestureDetected, setGestureDetected] = useState(false);
 
-  const startDetection = () => {
-    setIsProcessing(true);
-    setTimeout(() => {
-      setGestureDetected(true);
-      setIsProcessing(false);
-      setTimeout(() => onComplete(), 1000);
-    }, 2500);
+function AirGestureStep({ onComplete }: { onComplete: () => void }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const drawingPointsRef = useRef<{ x: number; y: number }[]>([]);
+  const [recording, setRecording] = useState(false);
+  const [verified, setVerified] = useState(false);
+
+  const target = useRef(String(Math.floor(Math.random() * 10))).current;
+
+  const referencePoints: Record<string, [number, number][]> = {
+    "0": [[0.4,0.3],[0.3,0.5],[0.4,0.7],[0.6,0.7],[0.7,0.5],[0.6,0.3],[0.4,0.3]],
+    "1": [[0.5,0.25],[0.5,0.45],[0.5,0.65],[0.5,0.85]],
+    "2": [[0.25,0.35],[0.75,0.35],[0.75,0.55],[0.25,0.85],[0.75,0.85]],
+    "3": [[0.25,0.25],[0.75,0.25],[0.5,0.5],[0.75,0.75],[0.25,0.75]],
+    "4": [[0.25,0.3],[0.25,0.5],[0.75,0.5],[0.75,0.75]],
+    "5": [[0.75,0.25],[0.25,0.25],[0.25,0.5],[0.75,0.5],[0.75,0.75],[0.25,0.75]],
+    "6": [[0.65,0.3],[0.4,0.4],[0.35,0.6],[0.45,0.75],[0.65,0.75],[0.7,0.55],[0.55,0.45],[0.4,0.6],[0.65,0.3]],
+    "7": [[0.25,0.25],[0.75,0.25],[0.5,0.75]],
+    "8": [[0.5,0.25],[0.35,0.4],[0.5,0.55],[0.65,0.4],[0.5,0.25],[0.35,0.6],[0.5,0.75],[0.65,0.6],[0.5,0.55]],
+    "9": [[0.35,0.45],[0.55,0.3],[0.7,0.45],[0.7,0.6],[0.55,0.7],[0.35,0.55],[0.35,0.45]],
+  };
+
+  const TOLERANCE = 0.08;
+
+  useEffect(() => {
+  if (!videoRef.current || !canvasRef.current) return;
+
+  const video = videoRef.current;
+  const canvas = canvasRef.current;
+  const ctx = canvas.getContext("2d");
+
+  let camera: any;
+
+  const hands = new Hands({
+    locateFile: (file) =>
+      `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+  });
+
+  hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence: 0.7,
+  });
+
+  hands.onResults((results) => {
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // ✅ draw camera
+    ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+
+    // ✅ draw checkpoints
+    referencePoints[target].forEach(([cx, cy], idx) => {
+      const x = cx * canvas.width;
+      const y = cy * canvas.height;
+
+      ctx.beginPath();
+      ctx.arc(x, y, 12, 0, 2 * Math.PI);
+      ctx.fillStyle = "gold";
+      ctx.fill();
+
+      ctx.fillStyle = "black";
+      ctx.fillText(String(idx + 1), x - 5, y + 5);
+    });
+
+    if (results.multiHandLandmarks) {
+      const landmarks = results.multiHandLandmarks[0];
+
+      drawConnectors(ctx, landmarks, HAND_CONNECTIONS, {
+        color: "red",
+        lineWidth: 2,
+      });
+
+      drawLandmarks(ctx, landmarks, {
+        color: "white",
+      });
+
+      const tip = landmarks[8];
+
+      if (recording) {
+        drawingPointsRef.current.push({
+          x: tip.x,
+          y: tip.y,
+        });
+      }
+    }
+
+    // draw path
+    const pts = drawingPointsRef.current;
+    for (let i = 1; i < pts.length; i++) {
+      ctx.beginPath();
+      ctx.moveTo(
+        pts[i - 1].x * canvas.width,
+        pts[i - 1].y * canvas.height
+      );
+      ctx.lineTo(
+        pts[i].x * canvas.width,
+        pts[i].y * canvas.height
+      );
+      ctx.strokeStyle = "blue";
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+  });
+
+  // ✅ VERY IMPORTANT: start camera ONLY ONCE
+  camera = new Camera(video, {
+    onFrame: async () => {
+      await hands.send({ image: video });
+    },
+    width: 640,
+    height: 480,
+  });
+
+  camera.start();
+
+  return () => {
+    if (camera) camera.stop();
+  };
+}, []); // ❗ EMPTY DEPENDENCY (CRITICAL)
+
+  const verify = () => {
+    const checkpoints = referencePoints[target];
+    const points = drawingPointsRef.current;
+
+    if (points.length < 5) {
+      alert("⚠️ Not enough movement captured");
+      return;
+    }
+
+    let allHit = true;
+    let missed: number[] = [];
+
+    checkpoints.forEach(([cx, cy], idx) => {
+      const hit = points.some((p) => {
+        const dist = Math.sqrt((cx - p.x) ** 2 + (cy - p.y) ** 2);
+        return dist <= TOLERANCE;
+      });
+
+      if (!hit) {
+        allHit = false;
+        missed.push(idx + 1);
+      }
+    });
+
+    if (allHit) {
+      setVerified(true);
+      setTimeout(onComplete, 1000);
+    } else {
+      alert(` Missed checkpoints: ${missed.join(", ")}`);
+      drawingPointsRef.current = [];
+    }
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -20 }}
-      className="space-y-8"
-    >
-      <div className="text-center space-y-3">
-        <h3 className="text-3xl text-[#0f172a]">Air Gesture Check</h3>
-        <p className="text-lg text-[#0f172a]/60 font-light">
-          Make a simple air gesture in front of the camera
-        </p>
+    <div className="text-center space-y-4">
+      <h2 className="text-xl">
+        Draw Number: <span className="text-purple-600">{target}</span>
+      </h2>
+
+      {/* ✅ CAMERA VISIBLE NOW */}
+      <video ref={videoRef} style={{ display: "none" }} />
+
+      <canvas
+        ref={canvasRef}
+        width={640}
+        height={480}
+        className="rounded-xl border"
+      />
+
+      <div className="space-x-3">
+        <button onClick={() => {
+          drawingPointsRef.current = [];
+          setRecording(true);
+        }}>
+          Start
+        </button>
+
+        <button onClick={() => setRecording(false)}>
+          Stop
+        </button>
+
+        <button onClick={verify}>
+          Verify
+        </button>
       </div>
 
-      {/* Large Camera Frame */}
-      <div className="max-w-2xl mx-auto">
-        <div className="aspect-[4/3] bg-gradient-to-br from-gray-100 to-gray-50 rounded-3xl overflow-hidden relative">
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="relative w-80 h-96">
-              <motion.div
-                animate={{
-                  boxShadow: gestureDetected
-                    ? "0 0 0 4px rgba(5, 150, 105, 0.3)"
-                    : isProcessing
-                    ? "0 0 0 4px rgba(59, 130, 246, 0.3)"
-                    : "0 0 0 4px rgba(209, 213, 219, 0.3)",
-                }}
-                className="absolute inset-0 border-4 border-white rounded-[3rem] overflow-hidden"
-              >
-                <div className="w-full h-full bg-gradient-to-br from-emerald-100 to-blue-100 flex items-center justify-center">
-                  <Hand className="w-20 h-20 text-gray-400" />
-                </div>
-              </motion.div>
-
-              {/* Corner indicators */}
-              <div className="absolute top-0 left-0 w-12 h-12 border-l-4 border-t-4 border-emerald-500 rounded-tl-[3rem]" />
-              <div className="absolute top-0 right-0 w-12 h-12 border-r-4 border-t-4 border-emerald-500 rounded-tr-[3rem]" />
-              <div className="absolute bottom-0 left-0 w-12 h-12 border-l-4 border-b-4 border-emerald-500 rounded-bl-[3rem]" />
-              <div className="absolute bottom-0 right-0 w-12 h-12 border-r-4 border-b-4 border-emerald-500 rounded-br-[3rem]" />
-
-              {/* Scanning animation */}
-              {isProcessing && !gestureDetected && (
-                <motion.div
-                  initial={{ top: "0%" }}
-                  animate={{ top: "100%" }}
-                  transition={{
-                    duration: 2,
-                    repeat: Infinity,
-                    ease: "linear",
-                  }}
-                  className="absolute left-0 right-0 h-1 bg-gradient-to-r from-transparent via-emerald-500 to-transparent opacity-60"
-                />
-              )}
-
-              {/* Success indicator */}
-              {gestureDetected && (
-                <motion.div
-                  initial={{ scale: 0 }}
-                  animate={{ scale: 1 }}
-                  className="absolute inset-0 flex items-center justify-center"
-                >
-                  <div className="w-20 h-20 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shadow-2xl">
-                    <Check className="w-10 h-10 text-white" />
-                  </div>
-                </motion.div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {!isProcessing && !gestureDetected && (
-          <motion.button
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            onClick={startDetection}
-            className="w-full mt-8 px-8 py-4 bg-gradient-to-r from-emerald-600 to-emerald-500 text-white rounded-2xl premium-shadow-lg hover:shadow-2xl hover:scale-105 transition-all duration-300"
-          >
-            <span className="text-lg">Start Air Gesture Check</span>
-          </motion.button>
-        )}
-
-        {gestureDetected && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mt-8 p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-center"
-          >
-            <div className="flex items-center justify-center gap-2 text-emerald-600">
-              <Check className="w-5 h-5" />
-              <span>Air gesture detected successfully</span>
-            </div>
-          </motion.div>
-        )}
-      </div>
-    </motion.div>
+      {verified && <p className="text-green-600">✅ VERIFIED</p>}
+    </div>
   );
 }
+
+export default AirGestureStep;
 
 // Liveness Success Screen
 function LivenessSuccessScreen({ onContinue }: { onContinue: () => void }) {
