@@ -216,8 +216,6 @@ export function LivenessModule() {
                     <HeadTurnStep
                       key="head-turn"
                       onComplete={() => handleComplete("head-turn")}
-                      isProcessing={isProcessing}
-                      setIsProcessing={setIsProcessing}
                     />
                   )}
 
@@ -492,45 +490,45 @@ const stopDetection = async () => {
 // Sub-step 2: Head Turn
 function HeadTurnStep({
   onComplete,
-  isProcessing,
-  setIsProcessing,
 }: {
   onComplete: () => void;
-  isProcessing: boolean;
-  setIsProcessing: (value: boolean) => void;
 }) {
-  const [direction, setDirection] = useState<"left" | "right" | "complete">("left");
-  const [currentAction, setCurrentAction] = useState("Click start to begin");
-
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  const startDetection = async () => {
+  const [direction, setDirection] = useState<"LEFT" | "RIGHT">("LEFT");
+  const [counter, setCounter] = useState(0);
+  const [verified, setVerified] = useState(false);
+  const [isDetecting, setIsDetecting] = useState(false);
+
+  const REQUIRED_FRAMES = 8;
+
+  // ✅ START DETECTION
+  const startDetection = () => {
+    const dir = Math.random() > 0.5 ? "LEFT" : "RIGHT";
+    setDirection(dir);
+    setCounter(0);
+    setVerified(false);
+    setIsDetecting(true);
+  };
+
+  useEffect(() => {
+  if (!isDetecting || !videoRef.current) return;
+
+  let faceMesh: FaceMesh | null = null;
+  let stream: MediaStream | null = null;
+  let animationFrameId: number;
+
+  const startCamera = async () => {
     try {
-      setIsProcessing(true);
-      setDirection("left");
-      setCurrentAction("Initializing camera...");
-
-      // 🎥 Start camera
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-
-      if (!videoRef.current) {
-        console.error("❌ videoRef not found");
-        return;
-      }
-
-      videoRef.current.srcObject = stream;
-
-      // ✅ WAIT for video to load
-      await new Promise((resolve) => {
-        if (!videoRef.current) return;
-        videoRef.current.onloadedmetadata = () => {
-          videoRef.current?.play();
-          resolve(true);
-        };
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
       });
 
-      // 🧠 Initialize FaceMesh
-      const faceMesh = new FaceMesh({
+      videoRef.current!.srcObject = stream;
+
+      await videoRef.current!.play();
+
+      faceMesh = new FaceMesh({
         locateFile: (file) =>
           `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
       });
@@ -538,187 +536,159 @@ function HeadTurnStep({
       faceMesh.setOptions({
         maxNumFaces: 1,
         refineLandmarks: true,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5,
       });
 
-      let counter = 0;
-      const REQUIRED_FRAMES = 8;
-
-      let currentDirection: "left" | "right" = "left";
-
-      setCurrentAction("Turn your head LEFT 👈");
-
-      // 🔍 Detection logic
       faceMesh.onResults((results) => {
-        if (
-          !results.multiFaceLandmarks ||
-          results.multiFaceLandmarks.length === 0
-        ) {
-          counter = 0;
-          return;
-        }
+  if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+    setCounter(0);
+    return;
+  }
 
-        const landmarks = results.multiFaceLandmarks[0];
+  const landmarks = results.multiFaceLandmarks[0];
+  
 
-        const nose = landmarks[1];
-        const leftCheek = landmarks[234];
-        const rightCheek = landmarks[454];
+  // ✅ SAFETY CHECK
+  if (!landmarks[1] || !landmarks[33] || !landmarks[263]) {
+    return;
+  }
 
-        const faceCenter = (leftCheek.x + rightCheek.x) / 2;
-        const offset = nose.x - faceCenter;
+  const nose = landmarks[1];
+  const left_eye = landmarks[33];
+  const right_eye = landmarks[263];
 
-        // 👈 LEFT detection
-        if (currentDirection === "left" && offset < -0.03) {
-          counter++;
-          setCurrentAction("Good! Hold LEFT...");
+  const eye_center = (left_eye.x + right_eye.x) / 2;
+  const offset = (nose.x - eye_center) * -1;
 
-          if (counter > REQUIRED_FRAMES) {
-            currentDirection = "right";
-            setDirection("right");
-            counter = 0;
-            setCurrentAction("Now turn RIGHT 👉");
-          }
-        }
+  console.log("OFFSET:", offset); // 🔥 DEBUG
 
-        // 👉 RIGHT detection
-        else if (currentDirection === "right" && offset > 0.03) {
-          counter++;
-          setCurrentAction("Good! Hold RIGHT...");
+  setCounter((prev) => {
+    let newCount = prev;
 
-          if (counter > REQUIRED_FRAMES) {
-            setDirection("complete");
-            setCurrentAction("✅ Head movement verified!");
-            setIsProcessing(false);
+    if (direction === "LEFT" && offset < -0.02) {
+      newCount++;
+    } else if (direction === "RIGHT" && offset > 0.02) {
+      newCount++;
+    } else {
+      newCount = Math.max(0, newCount - 1);
+    }
 
-            // 🛑 Stop camera
-            if (videoRef.current?.srcObject) {
-              const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
-              tracks.forEach((track) => track.stop());
-            }
+    return newCount;
+  });
+});
 
-            onComplete();
-          }
-        } else {
-          counter = 0;
-        }
-      });
-
-      // 🔄 Detection loop
       const detect = async () => {
-        if (
-          videoRef.current &&
-          videoRef.current.readyState === 4 &&
-          videoRef.current.videoWidth > 0
-        ) {
+        if (faceMesh && videoRef.current) {
           await faceMesh.send({ image: videoRef.current });
         }
-        requestAnimationFrame(detect);
+        animationFrameId = requestAnimationFrame(detect);
       };
 
       detect();
     } catch (err) {
-      console.error("❌ Camera error:", err);
-      setIsProcessing(false);
-      alert("Camera access denied or not available");
+      console.error("Camera error:", err);
     }
   };
 
+  startCamera();
+
+  return () => {
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    if (faceMesh) faceMesh.close();
+    cancelAnimationFrame(animationFrameId);
+  };
+}, [isDetecting]);
+
+    
+
+  // ✅ VERIFY
+  useEffect(() => {
+    if (!isDetecting) return;
+
+    if (!verified && counter > REQUIRED_FRAMES) {
+      setVerified(true);
+      setIsDetecting(false);
+
+      setTimeout(() => {
+        onComplete();
+      }, 800);
+    }
+  }, [counter, isDetecting, verified, onComplete]);
+
   return (
-    <motion.div
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -20 }}
-      className="space-y-8"
-    >
-      {/* Header */}
-      <div className="text-center">
-        <div className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 border border-blue-200 rounded-full mb-4">
-          <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-          <span className="text-sm text-blue-700 font-medium">
-            Step 2 of 4 • Head Movement
-          </span>
-        </div>
-        <h2 className="text-3xl text-[#0f172a] mb-2">Turn Your Head</h2>
-        <p className="text-lg text-[#0f172a]/60 font-light">
-          Follow instructions to verify 3D face structure
+    <div className="space-y-6 text-center">
+
+      {/* TITLE */}
+      <h2 className="text-3xl font-semibold">Turn Your Head</h2>
+
+      {/* INSTRUCTION */}
+      {isDetecting ? (
+        <p className="text-blue-600 text-lg font-semibold">
+          👉 Turn your head {direction}
         </p>
-      </div>
+      ) : (
+        <p className="text-gray-500">
+          Click start to begin head movement detection
+        </p>
+      )}
 
-      {/* Camera Preview */}
-      <div className="aspect-video max-w-2xl mx-auto bg-gradient-to-br from-gray-100 to-gray-50 rounded-2xl relative overflow-hidden border-2 border-gray-200 shadow-xl">
-        
-        {/* 🎥 CAMERA (VISIBLE NOW) */}
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          className="absolute inset-0 w-full h-full object-cover"
-        />
-
-        {/* Oval */}
-        <div className="absolute inset-0 flex items-center justify-center">
-          <motion.div
-            animate={{
-              scale: isProcessing ? [1, 1.02, 1] : 1,
-              borderColor:
-                direction === "complete"
-                  ? "#10b981"
-                  : isProcessing
-                  ? "#3b82f6"
-                  : "#d1d5db",
-            }}
-            transition={{ duration: 2, repeat: isProcessing ? Infinity : 0 }}
-            className="w-64 h-80 border-4 rounded-[50%] border-dashed"
-          />
-        </div>
-
-        {/* Direction */}
-        {isProcessing && direction !== "complete" && (
-          <>
-            {direction === "left" && (
-              <div className="absolute left-8 top-1/2 -translate-y-1/2 text-blue-600 text-lg">
-                ← LEFT
-              </div>
-            )}
-            {direction === "right" && (
-              <div className="absolute right-8 top-1/2 -translate-y-1/2 text-blue-600 text-lg">
-                RIGHT →
-              </div>
-            )}
-          </>
-        )}
-
-        {/* Success */}
-        {direction === "complete" && (
-          <div className="absolute inset-0 flex items-center justify-center bg-emerald-500/20">
-            <div className="text-emerald-600 text-xl font-bold">
-              ✅ Verified
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Status */}
-      {isProcessing && (
-        <div className="text-center text-blue-600 font-medium">
-          {currentAction}
+      {/* ✅ BUTTON FIXED (ALWAYS VISIBLE CENTER) */}
+      {!isDetecting && (
+        <div className="flex justify-center mt-4">
+          <button
+            onClick={startDetection}
+            className="bg-green-600 hover:bg-green-700 text-white px-8 py-3 rounded-xl text-lg shadow-lg"
+          >
+            ▶ Start Head Movement
+          </button>
         </div>
       )}
 
-      {/* Button */}
-      {!isProcessing && (
+      {/* CAMERA */}
+      {isDetecting && (
+        <div className="relative w-full max-w-xl mx-auto bg-gray-100 rounded-xl h-[300px] overflow-hidden">
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className="absolute inset-0 w-full h-full object-cover"
+          />
+
+          {/* FACE GUIDE */}
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-40 h-56 border-2 border-dashed rounded-full" />
+          </div>
+
+          {/* DIRECTION */}
+          <div className="absolute top-4 text-blue-600 font-semibold">
+            Turn {direction}
+          </div>
+        </div>
+      )}
+
+      {/* STOP BUTTON */}
+      {isDetecting && (
         <button
-          onClick={startDetection}
-          className="w-full mt-6 px-8 py-4 bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-2xl"
+          onClick={() => setIsDetecting(false)}
+          className="bg-red-500 text-white px-6 py-3 rounded-lg"
         >
-          Start Head Movement
+          Stop
         </button>
       )}
-    </motion.div>
+
+      {/* COUNTER */}
+      {isDetecting && <p>Frames detected: {counter}</p>}
+
+      {/* SUCCESS */}
+      {verified && (
+        <p className="text-green-600 text-xl">
+          ✅ Head Turn Verified
+        </p>
+      )}
+    </div>
   );
 }
+
 
 // Sub-step 3: Heartbeat Detection
 function HeartbeatStep({
@@ -1026,13 +996,17 @@ function HeartbeatStep({
 }
 
 // Sub-step 4: Air Gesture Check
-
-function AirGestureStep({ onComplete }: { onComplete: () => void }) {
+export default function AirGestureStep({
+  onComplete,
+}: {
+  onComplete: () => void;
+}) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const drawingPointsRef = useRef<{ x: number; y: number }[]>([]);
-  const [recording, setRecording] = useState(false);
+  const recordingRef = useRef(false);
+
   const [verified, setVerified] = useState(false);
 
   const target = useRef(String(Math.floor(Math.random() * 10))).current;
@@ -1053,103 +1027,117 @@ function AirGestureStep({ onComplete }: { onComplete: () => void }) {
   const TOLERANCE = 0.08;
 
   useEffect(() => {
-  if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current) return;
 
-  const video = videoRef.current;
-  const canvas = canvasRef.current;
-  const ctx = canvas.getContext("2d");
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
 
-  let camera: any;
+    let camera: any;
 
-  const hands = new Hands({
-    locateFile: (file) =>
-      `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
-  });
+    const hands = new Hands({
+      locateFile: (file) => {
+    return window.location.origin + "/mediapipe/" + file;
+  },
+  
+      });
 
-  hands.setOptions({
-    maxNumHands: 1,
-    modelComplexity: 1,
-    minDetectionConfidence: 0.7,
-    minTrackingConfidence: 0.7,
-  });
-
-  hands.onResults((results) => {
-    if (!ctx) return;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // ✅ draw camera
-    ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
-
-    // ✅ draw checkpoints
-    referencePoints[target].forEach(([cx, cy], idx) => {
-      const x = cx * canvas.width;
-      const y = cy * canvas.height;
-
-      ctx.beginPath();
-      ctx.arc(x, y, 12, 0, 2 * Math.PI);
-      ctx.fillStyle = "gold";
-      ctx.fill();
-
-      ctx.fillStyle = "black";
-      ctx.fillText(String(idx + 1), x - 5, y + 5);
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence: 0.7,
     });
 
-    if (results.multiHandLandmarks) {
-      const landmarks = results.multiHandLandmarks[0];
+    hands.onResults((results) => {
+      if (!ctx) return;
 
-      drawConnectors(ctx, landmarks, HAND_CONNECTIONS, {
-        color: "red",
-        lineWidth: 2,
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Mirror camera (like Python flip)
+      ctx.save();
+      ctx.scale(-1, 1);
+      ctx.drawImage(results.image, -canvas.width, 0, canvas.width, canvas.height);
+      ctx.restore();
+
+      // Draw checkpoints
+      referencePoints[target].forEach(([cx, cy], idx) => {
+        const x = cx * canvas.width;
+        const y = cy * canvas.height;
+
+        ctx.beginPath();
+        ctx.arc(x, y, 12, 0, 2 * Math.PI);
+        ctx.fillStyle = "gold";
+        ctx.fill();
+
+        ctx.fillStyle = "black";
+        ctx.fillText(String(idx + 1), x - 5, y + 5);
       });
 
-      drawLandmarks(ctx, landmarks, {
-        color: "white",
-      });
+      // Hand detection (safe)
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const landmarks = results.multiHandLandmarks[0];
+        if (!landmarks || !landmarks[8]) return;
 
-      const tip = landmarks[8];
+        const mirroredLandmarks = landmarks.map((lm) => ({
+  ...lm,
+  x: 1 - lm.x,
+}));
 
-      if (recording) {
-        drawingPointsRef.current.push({
-          x: tip.x,
-          y: tip.y,
-        });
+drawConnectors(ctx, mirroredLandmarks, HAND_CONNECTIONS, {
+  color: "red",
+  lineWidth: 2,
+});
+
+drawLandmarks(ctx, mirroredLandmarks, {
+  color: "white",
+});
+
+        const tip = landmarks[8];
+
+        const mirroredX = 1 - tip.x;
+        const mirroredY = tip.y;
+
+        if (recordingRef.current) {
+          drawingPointsRef.current.push({
+          x: mirroredX,
+          y: mirroredY,
+          });
+        }
       }
-    }
 
-    // draw path
-    const pts = drawingPointsRef.current;
-    for (let i = 1; i < pts.length; i++) {
-      ctx.beginPath();
-      ctx.moveTo(
-        pts[i - 1].x * canvas.width,
-        pts[i - 1].y * canvas.height
-      );
-      ctx.lineTo(
-        pts[i].x * canvas.width,
-        pts[i].y * canvas.height
-      );
-      ctx.strokeStyle = "blue";
-      ctx.lineWidth = 3;
-      ctx.stroke();
-    }
-  });
+      // Draw path
+      const pts = drawingPointsRef.current;
+      for (let i = 1; i < pts.length; i++) {
+        ctx.beginPath();
+        ctx.moveTo(
+          pts[i - 1].x * canvas.width,
+          pts[i - 1].y * canvas.height
+        );
+        ctx.lineTo(
+          pts[i].x * canvas.width,
+          pts[i].y * canvas.height
+        );
+        ctx.strokeStyle = "blue";
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      }
+    });
 
-  // ✅ VERY IMPORTANT: start camera ONLY ONCE
-  camera = new Camera(video, {
-    onFrame: async () => {
-      await hands.send({ image: video });
-    },
-    width: 640,
-    height: 480,
-  });
+    camera = new Camera(video, {
+      onFrame: async () => {
+        await hands.send({ image: video });
+      },
+      width: 640,
+      height: 480,
+    });
 
-  camera.start();
+    camera.start();
 
-  return () => {
-    if (camera) camera.stop();
-  };
-}, []); // ❗ EMPTY DEPENDENCY (CRITICAL)
+    return () => {
+      if (camera) camera.stop();
+    };
+  }, []);
 
   const verify = () => {
     const checkpoints = referencePoints[target];
@@ -1179,50 +1167,76 @@ function AirGestureStep({ onComplete }: { onComplete: () => void }) {
       setVerified(true);
       setTimeout(onComplete, 1000);
     } else {
-      alert(` Missed checkpoints: ${missed.join(", ")}`);
+      alert(`❌ Missed checkpoints: ${missed.join(", ")}`);
       drawingPointsRef.current = [];
     }
   };
 
   return (
     <div className="text-center space-y-4">
-      <h2 className="text-xl">
-        Draw Number: <span className="text-purple-600">{target}</span>
+
+      <h2 className="text-2xl font-bold">
+        ✍️ Draw Number: <span className="text-purple-600">{target}</span>
       </h2>
 
-      {/* ✅ CAMERA VISIBLE NOW */}
+      {/* Hidden video (required internally) */}
       <video ref={videoRef} style={{ display: "none" }} />
 
+      {/* Only visible camera */}
       <canvas
         ref={canvasRef}
         width={640}
         height={480}
-        className="rounded-xl border"
+        className="rounded-lg border shadow-lg mx-auto"
       />
 
-      <div className="space-x-3">
-        <button onClick={() => {
-          drawingPointsRef.current = [];
-          setRecording(true);
-        }}>
-          Start
+      <div className="space-x-3 mt-4">
+        <button
+          onClick={() => {
+            drawingPointsRef.current = [];
+            recordingRef.current = true;
+          }}
+          className="bg-green-500 text-white px-4 py-2 rounded-lg"
+        >
+          Start Drawing
         </button>
 
-        <button onClick={() => setRecording(false)}>
+        <button
+          onClick={() => {
+            recordingRef.current = false;
+          }}
+          className="bg-yellow-500 text-white px-4 py-2 rounded-lg"
+        >
           Stop
         </button>
 
-        <button onClick={verify}>
+        <button
+          onClick={verify}
+          className="bg-blue-600 text-white px-4 py-2 rounded-lg"
+        >
           Verify
+        </button>
+
+        <button
+          onClick={() => {
+            drawingPointsRef.current = [];
+            recordingRef.current = false;
+          }}
+          className="bg-red-500 text-white px-4 py-2 rounded-lg"
+        >
+          Reset
         </button>
       </div>
 
-      {verified && <p className="text-green-600">✅ VERIFIED</p>}
+      {verified && (
+        <p className="text-green-600 font-semibold">
+          ✅ VERIFIED SUCCESSFULLY
+        </p>
+      )}
     </div>
   );
 }
 
-export default AirGestureStep;
 
 // Liveness Success Screen
 function LivenessSuccessScreen({ onContinue }: { onContinue: () => void }) {

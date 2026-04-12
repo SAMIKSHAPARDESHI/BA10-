@@ -64,9 +64,14 @@
       --tw-backdrop-saturate: initial;
       --tw-backdrop-sepia: initial;
       --tw-duration: initial;
+
     }
   }
 }
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 @layer theme {
   :root, :host {
