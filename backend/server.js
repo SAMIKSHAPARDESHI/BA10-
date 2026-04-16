@@ -3,6 +3,7 @@ const cors = require("cors");
 const connectDB = require("./db");
 
 const authRoutes = require("./routes/authRoutes");
+const signatureRoutes = require("./routes/signatureRoutes"); // ⭐ ADDED
 
 const app = express();
 
@@ -15,6 +16,7 @@ connectDB();
 
 // Routes
 app.use("/api", authRoutes);
+app.use("/api", signatureRoutes); // ⭐ ADDED
 
 // TEST ROUTE
 app.get("/", (req, res) => {

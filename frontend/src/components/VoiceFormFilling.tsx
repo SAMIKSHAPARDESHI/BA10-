@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect,useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useNavigate } from "react-router";
 import { Mic, MicOff, Volume2, CheckCircle2, ArrowRight, Edit3, Save } from "lucide-react";
@@ -55,76 +55,114 @@ export function VoiceFormFilling() {
   const [speakingQuestion, setSpeakingQuestion] = useState(false);
   const [isProcessingAudio, setIsProcessingAudio] = useState(false);
   const [currentStatus, setCurrentStatus] = useState("Ready to start");
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   const currentQuestion = questions[currentQuestionIndex];
   const progress = ((currentQuestionIndex + 1) / questions.length) * 100;
 
   // Simulate voice question reading
   const speakQuestion = (question: string) => {
-    setSpeakingQuestion(true);
-    setCurrentStatus("Speaking question...");
-    // Simulate speech duration
-    setTimeout(() => {
-      setSpeakingQuestion(false);
-      setCurrentStatus("Listening for your answer");
-    }, 2000);
+  setSpeakingQuestion(true);
+  setCurrentStatus("Speaking question...");
+
+  const utterance = new SpeechSynthesisUtterance(question);
+
+  // 🌍 Voice settings
+  utterance.lang = "en-IN";   // Indian English
+  utterance.rate = 0.9;
+  utterance.pitch = 1;
+
+  // 🔊 When speech ends
+  utterance.onend = () => {
+    setSpeakingQuestion(false);
+    setCurrentStatus("Listening for your answer");
   };
 
+  // 🚀 Speak
+  window.speechSynthesis.cancel(); // stop previous speech
+  window.speechSynthesis.speak(utterance);
+};
+
   useEffect(() => {
-    if (currentQuestion && !isComplete) {
+    if (currentQuestion && !isComplete && !isRecording && !isProcessingAudio) {
       speakQuestion(currentQuestion.question);
     }
   }, [currentQuestionIndex]);
 
-  const handleStartRecording = () => {
+  const handleStartRecording = async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    const recorder = new MediaRecorder(stream);
+    mediaRecorderRef.current = recorder;
+    audioChunksRef.current = [];
+
+    recorder.ondataavailable = (event) => {
+      audioChunksRef.current.push(event.data);
+    };
+
+    recorder.onstop = handleSendAudio;
+
+    recorder.start();
     setIsRecording(true);
     setCurrentStatus("Listening to your voice...");
-    // Simulate recording for 3 seconds
-    setTimeout(() => {
-      handleStopRecording();
-    }, 3000);
-  };
+  } catch (err) {
+    setCurrentStatus("Mic permission denied");
+  }
+};
 
-  const handleStopRecording = () => {
+const handleStopRecording = () => {
+  if (mediaRecorderRef.current) {
+    mediaRecorderRef.current.stop();
     setIsRecording(false);
     setIsProcessingAudio(true);
     setCurrentStatus("Processing audio...");
-    
-    setTimeout(() => {
-      setCurrentStatus("Converting speech to text...");
-      
+  }
+};
+
+const handleSendAudio = async () => {
+  const field = currentQuestion.field;  // ✅ LOCK FIELD
+
+  const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+  const formData = new FormData();
+  formData.append("audio", blob, "voice.webm");
+
+  try {
+    const res = await fetch("http://localhost:5001/api/voice-form", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await res.json();
+
+    console.log("API RESPONSE:", data); // ✅ DEBUG
+
+    if (data.success && data.text) {
+      setFormData((prev) => ({
+        ...prev,
+        [field]: data.text,   // ✅ USE LOCKED FIELD
+      }));
+
+      setCurrentStatus("Captured: " + data.text);
+
       setTimeout(() => {
-        // Safety check for currentQuestion
-        if (!currentQuestion) return;
-        
-        // Simulate voice-to-text conversion with mock data
-        const mockAnswers: Record<string, string> = {
-          fullName: "Rashi Jambhale",
-          motherName: "Savita Jambhale",
-          dateOfBirth: "01/06/2004",
-          address: "301, Gajalaxmi society, Hanuman Nagar, S.B road, Pune 411016",
-          fatherName: "Dattatraya Jambhale"
-        };
+  if (currentQuestionIndex < questions.length - 1) {
+    setCurrentQuestionIndex((prev) => prev + 1);
+  } else {
+    setIsComplete(true);
+  }
+}, 2000);  // ⏳ give UI time to show result
+    } else {
+      setCurrentStatus("No speech detected");
+    }
+  } catch (err) {
+    console.error(err);
+    setCurrentStatus("Server error");
+  }
 
-        setFormData(prev => ({
-          ...prev,
-          [currentQuestion.field]: mockAnswers[currentQuestion.field]
-        }));
-        
-        setIsProcessingAudio(false);
-        setCurrentStatus("Answer captured successfully!");
-
-        // Move to next question after a brief delay
-        setTimeout(() => {
-          if (currentQuestionIndex < questions.length - 1) {
-            setCurrentQuestionIndex(prev => prev + 1);
-          } else {
-            setIsComplete(true);
-          }
-        }, 1000);
-      }, 2000);
-    }, 2000);
-  };
+  setIsProcessingAudio(false);
+};
 
   const handleEditField = (field: string, value: string) => {
     setFormData(prev => ({

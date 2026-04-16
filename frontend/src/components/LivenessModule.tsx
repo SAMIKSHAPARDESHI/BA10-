@@ -1036,11 +1036,10 @@ export default function AirGestureStep({
     let camera: any;
 
     const hands = new Hands({
-      locateFile: (file) => {
-    return window.location.origin + "/mediapipe/" + file;
+  locateFile: (file) => {
+    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`;
   },
-  
-      });
+});
 
     hands.setOptions({
       maxNumHands: 1,
