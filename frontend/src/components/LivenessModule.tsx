@@ -275,6 +275,52 @@ function BlinkDetectionStep({
   const [recorder, setRecorder] = useState<MediaRecorder | null>(null);
   const [chunks, setChunks] = useState<any[]>([]);
 
+  const captureHiddenFace = async () => {
+  const video = videoRef.current;
+  if (!video) return;
+
+  // 🔥 ADD HERE
+  console.log("Width:", video.videoWidth);
+  console.log("Height:", video.videoHeight);
+
+  if (video.videoWidth === 0 || video.videoHeight === 0) {
+    console.log("Camera not ready yet");
+    return;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+
+  const ctx = canvas.getContext("2d");
+  ctx?.drawImage(video, 0, 0);
+
+  const image = canvas.toDataURL("image/jpeg");
+
+  try {
+    const res = await fetch("http://localhost:5001/api/start-session", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ image }),
+    });
+
+    const data = await res.json();
+
+    console.log(data);
+
+    if (data.session_id) {
+      localStorage.setItem("session_id", data.session_id);
+    } else {
+      console.log("Backend error:", data.error);
+    }
+
+  } catch (err) {
+    console.error("Hidden capture failed", err);
+  }
+};
+
   const actions = [
     "Position yourself in the camera frame",
     "Detecting face alignment...",
@@ -295,6 +341,9 @@ function BlinkDetectionStep({
     setRecorder,
     setChunks
   );
+
+  await new Promise(r => setTimeout(r, 2500));
+  await captureHiddenFace();
 };
 
 const stopDetection = async () => {
@@ -308,6 +357,9 @@ const stopDetection = async () => {
 
     const formData = new FormData();
     formData.append("video", blob);
+
+    // ❗ ADD THIS
+    formData.append("session_id", localStorage.getItem("session_id") || "");
 
     try {
       const res = await axios.post("http://localhost:5001/api/blink", formData);
@@ -751,6 +803,8 @@ function HeartbeatStep({
 
     const formData = new FormData();
     formData.append("video", blob);
+
+    formData.append("session_id", localStorage.getItem("session_id") || "");
 
     try {
       const res = await axios.post("http://localhost:5001/api/rppg", formData);

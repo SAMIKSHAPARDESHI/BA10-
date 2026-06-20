@@ -1,7 +1,15 @@
-node_modules/
-uploads/
-*.jpg
-*.png
-*.jpeg
+# Python
+__pycache__/
+*.pyc
 .venv/
 venv/
+
+# Node
+node_modules/
+
+# Temporary recordings
+*.webm
+*.wav
+
+# Environment files
+.env

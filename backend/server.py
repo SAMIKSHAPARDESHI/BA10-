@@ -3,6 +3,11 @@ from flask_cors import CORS
 from prototype.liveness.blink import blink_detection
 from prototype.liveness.rppg_detection import detect_rppg_liveness
 
+import uuid
+from face_utils import get_face_embedding, compare_faces  # create this file if not yet
+
+session_store = {}
+
 import pytesseract
 import base64
 import cv2
@@ -24,12 +29,64 @@ os.environ["PATH"] += os.pathsep + os.path.dirname(ffmpeg_path)
 r = sr.Recognizer()
 
 app = Flask(__name__)
-CORS(app)
+CORS(
+    app,
+    resources={r"/api/*": {"origins": "http://localhost:3000"}},
+    supports_credentials=True
+)
+
+@app.after_request
+def after_request(response):
+    response.headers.add("Access-Control-Allow-Origin", "http://localhost:3000")
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
+    response.headers.add("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+    return response
 
 @app.route('/')
 def home():
     return "eKYC Backend Running 🚀"
 
+@app.route('/api/start-session', methods=['POST'])
+def start_session():
+    try:
+        data = request.get_json()
+
+        if not data or "image" not in data:
+            return jsonify({"error": "No image received"}), 400
+
+        image_data = data["image"].split(",")[1]
+        image_bytes = base64.b64decode(image_data)
+
+        np_arr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+        if img is None:
+            return jsonify({"error": "Image decode failed"}), 400
+
+        session_id = str(uuid.uuid4())
+        path = f"{session_id}_start.jpg"
+
+        cv2.imwrite(path, img)
+
+        print("Saved image path:", path)
+
+        embedding = get_face_embedding(path)
+
+        print("Embedding generated")
+
+        if embedding is None:
+            return jsonify({"error": "Face not detected"}), 400
+
+        session_store[session_id] = {
+            "embedding": embedding.tolist(),
+            "image_path": path
+        }
+
+        return jsonify({"session_id": session_id})
+
+    except Exception as e:
+        print("START SESSION ERROR:", str(e))
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/blink', methods=['POST'])
 def blink_api():
@@ -51,20 +108,78 @@ def blink_api():
 @app.route('/api/rppg', methods=['POST'])
 def rppg_api():
     video = request.files.get('video')
+    session_id = request.form.get("session_id")
 
     if not video:
         return jsonify({"error": "No video received"}), 400
 
+    if session_id not in session_store:
+        return jsonify({"error": "Invalid session"}), 400
+
     video_path = "temp_rppg.webm"
     video.save(video_path)
 
+    # extract frame
+    cap = cv2.VideoCapture(video_path)
+    ret, frame = cap.read()
+    cap.release()
+
+    if not ret:
+        return jsonify({"error": "Frame extraction failed"}), 400
+
+    frame_path = "temp_face.jpg"
+    cv2.imwrite(frame_path, frame)
+
+    current_embedding = get_face_embedding(frame_path)
+
+    if current_embedding is None:
+        return jsonify({"error": "No face detected"}), 400
+
+    stored_embedding = np.array(session_store[session_id]["embedding"])
+
+    if not compare_faces(stored_embedding, current_embedding):
+        return jsonify({
+            "status": "FAILED",
+            "reason": "Different person detected"
+        }), 403
+
     is_real, bpm = detect_rppg_liveness(video_path)
 
-    if is_real:
-        return jsonify({"status": "REAL", "bpm": bpm})
-    else:
-        return jsonify({"status": "FAKE", "bpm": bpm})
+    return jsonify({
+        "status": "REAL" if is_real else "FAKE",
+        "bpm": bpm
+    })
     
+
+
+    session_id = request.form.get("session_id")
+    image = request.files.get("image")
+
+    if session_id not in session_store:
+        return jsonify({"error": "Invalid session"}), 400
+
+    if not image:
+        return jsonify({"error": "No image received"}), 400
+
+    path = "temp_head.jpg"
+    image.save(path)
+
+    current_embedding = get_face_embedding(path)
+
+    if current_embedding is None:
+        return jsonify({"error": "No face detected"}), 400
+
+    stored_embedding = np.array(session_store[session_id]["embedding"])
+
+    if not compare_faces(stored_embedding, current_embedding):
+        return jsonify({
+            "status": "FAILED",
+            "reason": "Different person detected"
+        }), 403
+
+    return jsonify({
+        "status": "REAL"
+    })
 
 @app.route('/api/pan', methods=['POST'])
 def pan_ocr():
